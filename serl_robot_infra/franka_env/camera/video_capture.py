@@ -29,7 +29,7 @@ class VideoCapture:
 
     def read(self):
         # print(self.name, self.q.qsize())
-        return self.q.get(timeout=5)
+        return self.q.get(timeout=0.001)
 
     def close(self):
         self.enable = False

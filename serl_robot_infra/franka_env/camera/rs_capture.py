@@ -1,5 +1,8 @@
 import numpy as np
-import pyrealsense2 as rs  # Intel RealSense cross-platform open-source API
+try:
+    import pyrealsense2 as rs  # Intel RealSense cross-platform open-source API
+except:
+    pass
 
 
 class RSCapture:

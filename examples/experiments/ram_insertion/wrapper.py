@@ -4,7 +4,11 @@ from franka_env.utils.rotations import euler_2_quat
 from scipy.spatial.transform import Rotation as R
 import numpy as np
 import requests
-from pynput import keyboard
+
+try:
+    from pynput import keyboard
+except:
+    pass
 
 from franka_env.envs.franka_env import FrankaEnv
 

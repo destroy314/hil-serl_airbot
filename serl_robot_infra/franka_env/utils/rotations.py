@@ -7,6 +7,9 @@ def quat_2_euler(quat):
     """calculates and returns: yaw, pitch, roll from given quaternion"""
     return R.from_quat(quat).as_euler("xyz")
 
+def euler_2_quat_scipy(angles):
+    # angles: [roll_x, pitch_y, yaw_z]
+    return R.from_euler("xyz", angles).as_quat()  # [x, y, z, w]
 
 def euler_2_quat(xyz):
     yaw, pitch, roll = xyz

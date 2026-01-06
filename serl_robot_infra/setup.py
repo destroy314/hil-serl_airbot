@@ -6,17 +6,21 @@ setup(
     packages=find_packages(),
     install_requires=[
         "gymnasium",
-        "pyrealsense2",
-        "pymodbus==2.5.3",
         "opencv-python",
         "pyquaternion",
+        "scipy",
         "pyspacemouse",
         "hidapi",
-        "pyyaml",
-        "rospkg",
-        "scipy",
-        "requests",
-        "flask",
-        "defusedxml",
     ],
+    extras_require={
+        "franka": [
+            "pyyaml",
+            "pymodbus==2.5.3",
+            "pyrealsense2",
+            "rospkg",
+            "requests",
+            "flask",
+            "defusedxml",
+        ]
+    },
 )

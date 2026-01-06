@@ -75,7 +75,8 @@ class RelativeFrame(gym.Wrapper):
         using the transform matrix
         """
         transform_inv = np.linalg.inv(self.transform_matrix)
-        obs["state"]["tcp_vel"] = transform_inv @ obs["state"]["tcp_vel"]
+        if "tcp_vel" in obs["state"]: # airbot don't have it for now
+            obs["state"]["tcp_vel"] = transform_inv @ obs["state"]["tcp_vel"]
 
         if self.include_relative_pose:
             T_b_o = construct_homogeneous_matrix(obs["state"]["tcp_pose"])

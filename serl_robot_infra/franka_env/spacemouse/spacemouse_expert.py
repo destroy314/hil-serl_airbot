@@ -1,6 +1,9 @@
 import multiprocessing
 import numpy as np
-from franka_env.spacemouse import pyspacemouse
+try:
+    from franka_env.spacemouse import pyspacemouse
+except:
+    pass
 from typing import Tuple
 
 
@@ -44,7 +47,7 @@ class SpaceMouseExpert:
                     -state[0].y, state[0].x, state[0].z,
                     -state[0].roll, -state[0].pitch, -state[0].yaw
                 ]
-                buttons = state[0].buttons
+                buttons = [state[0].buttons[0], state[0].buttons[-1]] # for our wireless spacemouse
 
             # Update the shared state
             self.latest_data["action"] = action
