@@ -6,6 +6,7 @@ import pickle as pkl
 import datetime
 from absl import app, flags
 import time
+from pynput import keyboard
 
 from experiments.mappings import CONFIG_MAPPING
 
@@ -13,7 +14,22 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string("exp_name", None, "Name of experiment corresponding to folder.")
 flags.DEFINE_integer("successes_needed", 20, "Number of successful demos to collect.")
 
+continue_loop = False
+def on_press(key):
+    global continue_loop
+    try:
+        if str(key) == 'Key.space':
+            continue_loop = True
+            print("Continuing to next episode...")
+    except AttributeError:
+        pass
+
 def main(_):
+    global continue_loop
+    listener = keyboard.Listener(
+        on_press=on_press,
+    )
+    listener.start()
     assert FLAGS.exp_name in CONFIG_MAPPING, 'Experiment folder not found.'
     config = CONFIG_MAPPING[FLAGS.exp_name]()
     env = config.get_environment(fake_env=False, save_video=False, classifier=True)
@@ -27,8 +43,9 @@ def main(_):
     trajectory = []
     returns = 0
     
+    actions = env.action_space.sample()
     while success_count < success_needed:
-        actions = np.zeros(env.action_space.sample().shape) 
+        # actions = np.zeros(env.action_space.sample().shape) 
         next_obs, rew, done, truncated, info = env.step(actions)
         returns += rew
         if "intervene_action" in info:
@@ -58,6 +75,10 @@ def main(_):
             trajectory = []
             returns = 0
             obs, info = env.reset()
+            while not continue_loop:
+                time.sleep(0.1)
+            continue_loop = False
+            actions = env.action_space.sample()
             
     if not os.path.exists("./demo_data"):
         os.makedirs("./demo_data")
@@ -66,6 +87,8 @@ def main(_):
     with open(file_name, "wb") as f:
         pkl.dump(transitions, f)
         print(f"saved {success_needed} demos to {file_name}")
+    
+    env.close()
 
 if __name__ == "__main__":
     app.run(main)

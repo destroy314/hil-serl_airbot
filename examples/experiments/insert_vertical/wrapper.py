@@ -9,9 +9,9 @@ try:
 except:
     pass
 
-from airbot_env.envs.airbot_env import AirbotEnv
+from airbot_env.envs.airbot_env import AirbotCartesianEnv
 
-class InsertVerticalEnv(AirbotEnv):
+class InsertVerticalEnv(AirbotCartesianEnv):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.should_regrasp = False

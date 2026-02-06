@@ -28,7 +28,11 @@ def _insert_recursively(
         dataset_dict[insert_index] = data_dict
     elif isinstance(dataset_dict, dict):
         for k in dataset_dict.keys():
-            _insert_recursively(dataset_dict[k], data_dict[k], insert_index)
+            try:
+                _insert_recursively(dataset_dict[k], data_dict[k], insert_index)
+            except Exception as e:
+                print(f'Error: {e} when insert key "{k}"')
+                raise
     else:
         raise TypeError()
 

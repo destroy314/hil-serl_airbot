@@ -6,6 +6,7 @@ import pickle as pkl
 import datetime
 from absl import app, flags
 from pynput import keyboard
+import time
 
 from experiments.mappings import CONFIG_MAPPING
 
@@ -19,14 +20,25 @@ def on_press(key):
     global success_key
     try:
         if str(key) == 'Key.space':
-            success_key = True
+            # success_key = True
+            success_key = not success_key # 脚踏板无法模拟按住的输入，只能先这样
+    except AttributeError:
+        pass
+
+def on_release(key):
+    global success_key
+    try:
+        if str(key) == 'Key.space':
+            success_key = False
     except AttributeError:
         pass
 
 def main(_):
     global success_key
     listener = keyboard.Listener(
-        on_press=on_press)
+        on_press=on_press,
+        # on_release=on_release
+    )
     listener.start()
     assert FLAGS.exp_name in CONFIG_MAPPING, 'Experiment folder not found.'
     config = CONFIG_MAPPING[FLAGS.exp_name]()
@@ -37,10 +49,12 @@ def main(_):
     failures = []
     success_needed = FLAGS.successes_needed
     pbar = tqdm(total=success_needed)
+    actions = env.action_space.sample()
     
     while len(successes) < success_needed:
-        actions = np.zeros(env.action_space.sample().shape) 
+        # start=time.time()
         next_obs, rew, done, truncated, info = env.step(actions)
+        # print(f"outer step hz: {1/(time.time() - start)}")
         if "intervene_action" in info:
             actions = info["intervene_action"]
 
@@ -58,7 +72,7 @@ def main(_):
         if success_key:
             successes.append(transition)
             pbar.update(1)
-            success_key = False
+            # success_key = False
         else:
             failures.append(transition)
 
@@ -77,6 +91,8 @@ def main(_):
     with open(file_name, "wb") as f:
         pkl.dump(failures, f)
         print(f"saved {len(failures)} failure transitions to {file_name}")
+    
+    env.close()
         
 if __name__ == "__main__":
     app.run(main)

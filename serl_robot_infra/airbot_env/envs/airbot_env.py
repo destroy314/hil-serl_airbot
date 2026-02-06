@@ -1,4 +1,3 @@
-"""Gym Interface for Franka"""
 import os
 import numpy as np
 import gymnasium as gym
@@ -9,7 +8,7 @@ import time
 import queue
 import threading
 from datetime import datetime
-from typing import Callable, Dict
+from typing import Callable, Dict, Literal
 try:
     from pynput import keyboard
 except:
@@ -65,13 +64,16 @@ class DefaultEnvConfig:
     IMAGE_CROP: dict[str, Callable] = {}
     TARGET_POSE: np.ndarray = np.zeros((6,))
     RESET_POSE: np.ndarray = np.zeros((6,))
+    RESET_JOINT_POS: np.ndarray = np.zeros((7,))
     REWARD_THRESHOLD: np.ndarray = np.zeros((6,))
-    ACTION_SCALE = np.zeros((3,))
+    ACTION_SCALE = np.zeros((3,)) # move, rotate, gripper
     RANDOM_RESET = False
     RANDOM_XY_RANGE = (0.0,)
     RANDOM_RZ_RANGE = (0.0,)
     ABS_POSE_LIMIT_HIGH = np.zeros((6,))
     ABS_POSE_LIMIT_LOW = np.zeros((6,))
+    JOINT_POS_LIMIT_LOW = np.zeros((7,))
+    JOINT_POS_LIMIT_HIGH = np.zeros((7,))
     DISPLAY_IMAGE: bool = True
     GRIPPER_SLEEP: float = 0.6
     MAX_EPISODE_LENGTH: int = 100
@@ -80,7 +82,8 @@ class DefaultEnvConfig:
 ##############################################################################
 
 
-class AirbotEnv(gym.Env):
+class AirbotCartesianEnv(gym.Env):
+    """For cartesian speed (twist) control"""
     def __init__(
         self,
         hz=10,
@@ -98,8 +101,8 @@ class AirbotEnv(gym.Env):
         self.max_episode_length = config.MAX_EPISODE_LENGTH
         self.display_image = config.DISPLAY_IMAGE
         self.gripper_sleep = config.GRIPPER_SLEEP
+        self.gripper_max_length = 0.07
 
-        self.reset_pose = config.RESET_POSE
         self.last_gripper_act = time.time()
         self.lastsent = time.time()
         self.randomreset = config.RANDOM_RESET
@@ -136,7 +139,7 @@ class AirbotEnv(gym.Env):
                         "tcp_pose": gym.spaces.Box(
                             -np.inf, np.inf, shape=(7,)
                         ),  # x,y,z,qx,qy,qz,w
-                        # "tcp_vel": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
+                        # "tcp_vel": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),  # we need jacobi matrix to calculate it
                         "gripper_pose": gym.spaces.Box(-1, 1, shape=(1,)),
                         # "tcp_force": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
                         # "tcp_torque": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
@@ -268,9 +271,8 @@ class AirbotEnv(gym.Env):
                 full_res_images[key] = copy.deepcopy(cropped_rgb)  # Store the full resolution cropped image
             except queue.Empty:
                 if allow_empty:
-                    resized = np.zeros(
-                        self.observation_space["images"][key].shape[:2][::-1]
-                    )
+                    h, w = self.observation_space["images"][key].shape[:2]
+                    resized = np.zeros((h, w, 3), dtype=np.uint8)
                     images[key] = resized[..., ::-1]
                     display_images[key + "_full"] = resized
                     continue
@@ -315,7 +317,7 @@ class AirbotEnv(gym.Env):
 
         # Perform Carteasian reset
         if self.randomreset:  # randomize reset position in xy plane
-            reset_pose = self.reset_pose.copy()
+            reset_pose = self._RESET_POSE.copy()
             reset_pose[:2] += np.random.uniform(
                 -self.random_xy_range, self.random_xy_range, (2,)
             )
@@ -325,7 +327,7 @@ class AirbotEnv(gym.Env):
             )
             reset_pose[3:] = euler_random
         else:
-            reset_pose = self.reset_pose.copy()
+            reset_pose = self._RESET_POSE.copy()
         
         self.planning_move(reset_pose)
     
@@ -421,7 +423,7 @@ class AirbotEnv(gym.Env):
             else: 
                 return
         elif mode == "continuous":
-            raise NotImplementedError("Continuous gripper control is optional")
+            self.robot.servo_eef_pos(pos * self.gripper_max_length)
 
     def _update_currpos(self):
         """
@@ -441,7 +443,7 @@ class AirbotEnv(gym.Env):
         # self.q = np.array(ps["q"])
         # self.dq = np.array(ps["dq"])
 
-        self.curr_gripper_pos = np.array(self.robot.get_eef_pos()) / 0.07
+        self.curr_gripper_pos = np.array(self.robot.get_eef_pos()) / self.gripper_max_length
 
     def _get_obs(self) -> dict:
         images = self.get_im()
@@ -463,3 +465,92 @@ class AirbotEnv(gym.Env):
             self.img_queue.put(None)
             cv2.destroyAllWindows()
             self.displayer.join()
+
+
+class AirbotJointEnv(AirbotCartesianEnv):
+    """For joint absolute position control"""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.RESET_JOINT_POS = kwargs["config"].RESET_JOINT_POS
+
+        self.action_space = gym.spaces.Box(
+            kwargs["config"].JOINT_POS_LIMIT_LOW,
+            kwargs["config"].JOINT_POS_LIMIT_HIGH,
+            dtype=np.float32,
+        )
+        
+        self.observation_space["state"] = gym.spaces.Dict(
+            {
+                "joint_pos": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
+                "joint_vel": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
+                "gripper_pose": gym.spaces.Box(-1, 1, shape=(1,)),
+                "joint_torque": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
+            }
+        )
+
+        if kwargs["fake_env"]:
+            return
+
+        self.robot.switch_mode(RobotMode.SERVO_JOINT_POS)
+    
+    def step(self, action):
+        start_time = time.time()
+
+        self._send_gripper_command(float(action[6]), mode="continuous")
+        self._send_joint_command(action[:6])
+
+        self.curr_path_length += 1
+        dt = time.time() - start_time
+        time.sleep(max(0, (1.0 / self.hz) - dt))
+
+        self._update_currpos()
+        ob = self._get_obs()
+        reward = self.compute_reward(ob)
+        done = self.curr_path_length >= self.max_episode_length or reward or self.terminate
+        return ob, int(reward), done, False, {"succeed": reward}
+
+    def _send_joint_command(self, pos: np.ndarray):
+        self.robot.servo_joint_pos(pos.tolist())
+
+    def _update_currpos(self):
+        """
+        Internal function to get the latest state of the robot and its gripper.
+        """
+        self.curr_joint_pos = np.array(self.robot.get_joint_pos())
+        self.curr_joint_vel = np.array(self.robot.get_joint_vel())
+        self.curr_joint_eff = np.array(self.robot.get_joint_eff())
+
+        pose = self.robot.get_end_pose()
+        self.currpos = np.array(pose[0] + pose[1])
+
+        self.curr_gripper_pos = np.array(self.robot.get_eef_pos()) / self.gripper_max_length
+
+    def _get_obs(self) -> dict:
+        images = self.get_im()
+        state_observation = {
+            "tcp_pose": self.currpos,
+            "joint_pos": self.curr_joint_pos,
+            "joint_vel": self.curr_joint_vel,
+            "gripper_pose": self.curr_gripper_pos,
+            "joint_torque": self.curr_joint_eff,
+        }
+        return copy.deepcopy(dict(images=images, state=state_observation))
+
+    def reset(self, **kwargs):
+        self.last_gripper_act = time.time()
+        if self.save_video:
+            self.save_video_recording()
+
+        self.robot.switch_mode(RobotMode.PLANNING_POS)
+        self.robot.move_to_joint_pos(joint_pos=self.RESET_JOINT_POS.tolist()[:6], blocking=True)
+        self.robot.switch_mode(RobotMode.SERVO_JOINT_POS)
+        self._send_gripper_command(float(self.RESET_JOINT_POS[6]), mode="continuous")
+        
+        self.curr_path_length = 0
+
+        self._update_currpos()
+        obs = self._get_obs()
+        self.terminate = False
+        print("reset used time:", time.time() - self.last_gripper_act)
+        return obs, {"succeed": False}
