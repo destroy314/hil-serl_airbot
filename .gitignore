@@ -1,7 +1,7 @@
 __pycache__/
 *.egg-info/
 
-run_*/
-demo_data/
-classifier_data/
-classifier_ckpt/
+examples/experiments/*/run_*/
+examples/experiments/*/demo_data/
+examples/experiments/*/classifier_data/
+examples/experiments/*/classifier_ckpt/

@@ -16,6 +16,9 @@ class DefaultTrainingConfig:
     random_steps: int = 0
     training_starts: int = 100
     steps_per_update: int = 50
+    pretrain_steps: int = 0
+    # "sac": full SAC update; "bc": BC loss for actor + RL for critic; "critic_only": only train critic
+    pretrain_loss: str = "sac"
 
     log_period: int = 10
     eval_period: int = 2000
@@ -31,11 +34,18 @@ class DefaultTrainingConfig:
 
     image_keys: List[str] = None
     classifier_keys: List[str] = None
+    # state will be flattened and concatenated as a single vector ordered by this list
     proprio_keys: List[str] = None
     
     # "single-arm-learned-gripper", "dual-arm-learned-gripper" for with learned gripper, 
     # "single-arm-fixed-gripper", "dual-arm-fixed-gripper" for without learned gripper (i.e. pregrasped)
+    # fixed-gripper may also means we treat gripper as a continuous DOF (use SACAgent for all dims)
     setup_mode: str = "single-arm-fixed-gripper"
+    action_stats_path: str = None
+    # >0(e.g. 0.9) to enable action min-max normalization to [-scale, scale]; 0 to disable
+    action_norm_scale: float = 0.0
+    # >0(e.g. 1.0) to enable action derivative constraints; 0 to disable
+    action_derivative_scale: float = 0.0
 
     @abstractmethod
     def get_environment(self, fake_env=False, save_video=False, classifier=False):

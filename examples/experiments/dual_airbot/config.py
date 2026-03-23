@@ -7,22 +7,17 @@ from airbot_env.envs.dual_airbot_env import DualAirbotEnv
 from airbot_env.envs.wrappers import (
     DualAirbotIntervention,
     DeltaJointActionWrapper,
-    ActionDerivativeConstraintWrapper,
 )
 from franka_env.envs.wrappers import (
-    Quat2EulerWrapper,
-    SpacemouseIntervention,
     MultiCameraBinaryRewardClassifierWrapper,
-    GripperCloseEnv
 )
-from franka_env.envs.relative_env import RelativeFrame
 from airbot_env.envs.airbot_env import DefaultEnvConfig
 from serl_launcher.wrappers.serl_obs_wrappers import SERLObsWrapper
 from serl_launcher.wrappers.chunking import ChunkingWrapper
 from serl_launcher.networks.reward_classifier import load_classifier_func
 
 from experiments.config import DefaultTrainingConfig
-from experiments.timing_belt.wrapper import TimingBeltEnv, GripperPenaltyWrapper
+from experiments.dual_airbot.wrapper import DualAirbotEnvSingle, GripperPenaltyWrapper
 
 _l = 100
 _c = 150
@@ -35,34 +30,28 @@ class EnvConfigLeft(DefaultEnvConfig):
             "index": 2,
             "dim": (640, 480),
             "fps": 30,
-            # "fake": True,
         },
         "env": {
             "index": 0,
             "dim": (640, 480),
             "fps": 30,
-            # "fake": True,
         },
     }
-    # IMAGE_CROP = {
-    #     "wrist": lambda img: img[240-_l:240+_l, 320-_l:320+_l],
-    #     "env": lambda img: img[240-_c:240+_c, 320-_c:320+_c],
-    # }
     IMAGE_CROP = {
         "wrist": lambda img: img[:, 80:560],
         "env": lambda img: img[:, 80:560],
     }
-    TARGET_POSE = np.array([0.0] * 6) # TODO not needed cause we don't compute reward?
+    TARGET_POSE = np.array([0.0] * 6)
     RESET_JOINT_POS = np.array([-0.05, -0.26, 0.56, 1.48, -1.19, -1.34, 0.0])
-    JOINT_POS_LIMIT_LOW = RESET_JOINT_POS - np.array([0.2] * 7) #TODO ignore when record demo and extract from demo traj
+    JOINT_POS_LIMIT_LOW = RESET_JOINT_POS - np.array([0.2] * 7)
     JOINT_POS_LIMIT_HIGH = RESET_JOINT_POS + np.array([0.2] * 7)
     RANDOM_RESET = True
     RANDOM_XY_RANGE = 0.02
     RANDOM_RZ_RANGE = 0.05
     ACTION_SCALE = (0.01, 1, 1)
-    DISPLAY_IMAGE = False
-    # MAX_EPISODE_LENGTH = 100
+    DISPLAY_IMAGE = False         # let DualAirbotEnv display image
     MAX_EPISODE_LENGTH = int(1e9)
+    GRIPPER_MODE = "binary"
 
 class EnvConfigRight(EnvConfigLeft):
     NAME: str = "right"
@@ -72,11 +61,10 @@ class EnvConfigRight(EnvConfigLeft):
             "index": 4,
             "dim": (640, 480),
             "fps": 30,
-            # "fake": True,
         },
     }
     RESET_JOINT_POS = np.array([-0.05, -0.26, 0.56, -1.48, 1.19, 1.34, 0.0])
-    JOINT_POS_LIMIT_LOW = RESET_JOINT_POS - np.array([0.2] * 7) #TODO change by hardware spec
+    JOINT_POS_LIMIT_LOW = RESET_JOINT_POS - np.array([0.2] * 7)
     JOINT_POS_LIMIT_HIGH = RESET_JOINT_POS + np.array([0.2] * 7)
 
 class TrainConfig(DefaultTrainingConfig):
@@ -87,29 +75,31 @@ class TrainConfig(DefaultTrainingConfig):
         "right/joint_pos", "right/joint_vel", "right/joint_torque", "right/gripper_pose"
     ]
     buffer_period = 1000
-    checkpoint_period = 5000
+    checkpoint_period = 1000
     steps_per_update = 50
+    training_starts = 250
     encoder_type = "resnet-pretrained"
-    setup_mode = "dual-arm-fixed-gripper"
-    pretrain_steps = 5000
+    setup_mode = "dual-arm-learned-gripper"
+    pretrain_steps = 1000
     pretrain_loss = "bc"
-    rel_ctrl = False
-    action_stats_path = "demo_data/abs_timing_belt_20_demos_2026-02-05_17-36-59_grasp_penalty.json"
-    action_norm_scale = 0.9
-    action_derivative_scale = 1.0
+    rel_ctrl = True
+    # Run compute_action_derivative_stats.py --rel on demo data to generate this file
+    action_stats_path = "demo_data/2.json"
+    action_norm_scale = 1.2
+    action_derivative_scale = 0.0  # no ActionDerivativeConstraintWrapper for delta control
     actor_kwargs = {
         "std_max": 0.15,
     }
 
     def get_environment(self, fake_env=False, save_video=False, classifier=False):
-        left_env = TimingBeltEnv(
-            hz=10,
+        left_env = DualAirbotEnvSingle(
+            hz=25,
             fake_env=fake_env,
             save_video=save_video,
             config=EnvConfigLeft(),
         )
-        right_env = TimingBeltEnv(
-            hz=10,
+        right_env = DualAirbotEnvSingle(
+            hz=25,
             fake_env=fake_env,
             save_video=save_video,
             config=EnvConfigRight(),
@@ -122,23 +112,15 @@ class TrainConfig(DefaultTrainingConfig):
                 left_follower_port=50051,
                 right_leader_port=50052,
                 right_follower_port=50053,
+                gripper_mode=EnvConfigLeft.GRIPPER_MODE,
             )
         if self.rel_ctrl:
             env = DeltaJointActionWrapper(env, max_delta=0.05)
 
-        # Apply action derivative constraints if configured
-        if self.action_derivative_scale != 0:
-            env = ActionDerivativeConstraintWrapper(
-                env,
-                stats_path=self.action_stats_path,
-                scale=self.action_derivative_scale,
-            )
-
         env = SERLObsWrapper(env, proprio_keys=self.proprio_keys)
-        # env = ChunkingWrapper(env, obs_horizon=1, act_exec_horizon=15, infer_delay=0.11)
         env = ChunkingWrapper(env, obs_horizon=1, act_exec_horizon=None)
         if classifier:
-            classifier = load_classifier_func(
+            classifier_fn = load_classifier_func(
                 key=jax.random.PRNGKey(0),
                 sample=env.observation_space.sample(),
                 image_keys=self.classifier_keys,
@@ -147,7 +129,7 @@ class TrainConfig(DefaultTrainingConfig):
 
             def reward_func(obs):
                 sigmoid = lambda x: 1 / (1 + jnp.exp(-x))
-                s = sigmoid(classifier(obs))[0]
+                s = sigmoid(classifier_fn(obs))[0]
                 return int(s > 0.85)
 
             env = MultiCameraBinaryRewardClassifierWrapper(env, reward_func)

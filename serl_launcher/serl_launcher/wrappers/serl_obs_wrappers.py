@@ -1,3 +1,4 @@
+from collections import OrderedDict
 import gymnasium as gym
 from gymnasium.spaces import flatten_space, flatten
 
@@ -14,9 +15,10 @@ class SERLObsWrapper(gym.ObservationWrapper):
         if self.proprio_keys is None:
             self.proprio_keys = list(self.env.observation_space["state"].keys())
 
-        self.proprio_space = gym.spaces.Dict(
+        # concat proprio by the order in proprio_keys
+        self.proprio_space = gym.spaces.Dict(OrderedDict(
             {key: self.env.observation_space["state"][key] for key in self.proprio_keys}
-        )
+        ))
 
         self.observation_space = gym.spaces.Dict(
             {

@@ -56,6 +56,7 @@ def make_sac_pixel_agent(
     reward_bias=0.0,
     target_entropy=None,
     discount=0.97,
+    std_max=5,
 ):
     agent = SACAgent.create_pixels(
         jax.random.PRNGKey(seed),
@@ -68,7 +69,7 @@ def make_sac_pixel_agent(
             "tanh_squash_distribution": True,
             "std_parameterization": "exp",
             "std_min": 1e-5,
-            "std_max": 5,
+            "std_max": std_max,
         },
         critic_network_kwargs={
             "activations": nn.tanh,
@@ -151,6 +152,7 @@ def make_sac_pixel_agent_hybrid_dual_arm(
     reward_bias=0.0,
     target_entropy=None,
     discount=0.97,
+    std_max=5,
 ):
     agent = SACAgentHybridDualArm.create_pixels(
         jax.random.PRNGKey(seed),
@@ -163,7 +165,7 @@ def make_sac_pixel_agent_hybrid_dual_arm(
             "tanh_squash_distribution": True,
             "std_parameterization": "exp",
             "std_min": 1e-5,
-            "std_max": 5,
+            "std_max": std_max,
         },
         critic_network_kwargs={
             "activations": nn.tanh,

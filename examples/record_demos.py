@@ -45,7 +45,8 @@ def main(_):
     
     actions = env.action_space.sample()
     while success_count < success_needed:
-        # actions = np.zeros(env.action_space.sample().shape) 
+        if hasattr(config, "rel_ctrl") and config.rel_ctrl:
+            actions = np.zeros(actions.shape)
         next_obs, rew, done, truncated, info = env.step(actions)
         returns += rew
         if "intervene_action" in info:
@@ -63,7 +64,7 @@ def main(_):
         )
         trajectory.append(transition)
         
-        pbar.set_description(f"Return: {returns}")
+        pbar.set_description(f"Return: {returns}, Len: {len(trajectory)}")
 
         obs = next_obs
         if done:
@@ -79,6 +80,8 @@ def main(_):
                 time.sleep(0.1)
             continue_loop = False
             actions = env.action_space.sample()
+            if hasattr(config, "rel_ctrl") and config.rel_ctrl:
+                actions = np.zeros(actions.shape)
             
     if not os.path.exists("./demo_data"):
         os.makedirs("./demo_data")
@@ -89,6 +92,7 @@ def main(_):
         print(f"saved {success_needed} demos to {file_name}")
     
     env.close()
+    listener.stop()
 
 if __name__ == "__main__":
     app.run(main)

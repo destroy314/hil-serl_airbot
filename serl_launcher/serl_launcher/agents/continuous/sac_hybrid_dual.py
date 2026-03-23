@@ -337,17 +337,28 @@ class SACAgentHybridDualArm(flax.struct.PyTreeNode):
             grad_params=params,
         )
         return temperature_loss, {"temperature_loss": temperature_loss}
-    
 
-    def loss_fns(self, batch):
+    def bc_actor_loss_fn(self, batch, params: Params, rng: PRNGKey):
+        rng, policy_rng = jax.random.split(rng)
+        action_distributions = self.forward_policy(
+            batch["observations"], rng=policy_rng, grad_params=params
+        )
+        predicted_ee_actions = action_distributions.mode()
+        gt_ee_actions = jnp.concatenate(
+            [batch["actions"][..., :6], batch["actions"][..., 7:13]], axis=-1
+        )
+        bc_loss = jnp.mean((predicted_ee_actions - gt_ee_actions) ** 2)
+        return bc_loss, {"bc_actor_loss": bc_loss}
+
+    def loss_fns(self, batch, use_bc_actor: bool = False):
         return {
             "critic": partial(self.critic_loss_fn, batch),
             "grasp_critic": partial(self.grasp_critic_loss_fn, batch),
-            "actor": partial(self.policy_loss_fn, batch),
+            "actor": partial(self.bc_actor_loss_fn, batch) if use_bc_actor else partial(self.policy_loss_fn, batch),
             "temperature": partial(self.temperature_loss_fn, batch),
         }
 
-    @partial(jax.jit, static_argnames=("pmap_axis", "networks_to_update"))
+    @partial(jax.jit, static_argnames=("pmap_axis", "networks_to_update", "use_bc_actor"))
     def update(
         self,
         batch: Batch,
@@ -356,6 +367,7 @@ class SACAgentHybridDualArm(flax.struct.PyTreeNode):
         networks_to_update: FrozenSet[str] = frozenset(
             {"actor", "critic", "grasp_critic", "temperature"}
         ),
+        use_bc_actor: bool = False,
         **kwargs
     ) -> Tuple["SACAgentHybridDualArm", dict]:
         """
@@ -386,7 +398,7 @@ class SACAgentHybridDualArm(flax.struct.PyTreeNode):
         )
 
         # Compute gradients and update params
-        loss_fns = self.loss_fns(batch, **kwargs)
+        loss_fns = self.loss_fns(batch, use_bc_actor=use_bc_actor)
 
         # Only compute gradients for specified steps
         assert networks_to_update.issubset(

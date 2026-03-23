@@ -77,6 +77,10 @@ class DefaultEnvConfig:
     DISPLAY_IMAGE: bool = True
     GRIPPER_SLEEP: float = 0.6
     MAX_EPISODE_LENGTH: int = 100
+    # "continuous": gripper action is a continuous value passed directly to the motor.
+    # "binary": gripper action is in {-1, 0, 1}; ≤-0.5 closes, ≥0.5 opens, 0 is neutral (no command).
+    # for binary mode, don't move gripper faster than GRIPPER_SLEEP because env will ignore the command.
+    GRIPPER_MODE: str = "continuous"
 
 
 ##############################################################################
@@ -101,7 +105,9 @@ class AirbotCartesianEnv(gym.Env):
         self.max_episode_length = config.MAX_EPISODE_LENGTH
         self.display_image = config.DISPLAY_IMAGE
         self.gripper_sleep = config.GRIPPER_SLEEP
+        self.normalize_gripper = False
         self.gripper_max_length = 0.07
+        self.gripper_mode = config.GRIPPER_MODE if hasattr(config, "GRIPPER_MODE") else "binary"
 
         self.last_gripper_act = time.time()
         self.lastsent = time.time()
@@ -127,6 +133,7 @@ class AirbotCartesianEnv(gym.Env):
             dtype=np.float64,
         )
         # Action/Observation Space
+        # [XYZ位置的增量 : 姿态变化旋转向量 : 夹爪控制]
         self.action_space = gym.spaces.Box(
             np.ones((7,), dtype=np.float32) * -1,
             np.ones((7,), dtype=np.float32),
@@ -172,6 +179,7 @@ class AirbotCartesianEnv(gym.Env):
         self.robot = AIRBOTArm(port=self.port)
         self.robot.connect()
         self.robot.switch_mode(RobotMode.SERVO_CART_POSE)
+        # self.robot.switch_mode(RobotMode.SERVO_CART_TWIST)
         # self.robot.set_speed_profile(SpeedProfile.SLOW)
         self.robot.set_speed_profile(SpeedProfile.DEFAULT)
 
@@ -211,7 +219,7 @@ class AirbotCartesianEnv(gym.Env):
         action[3:6]*=self.action_scale[1]
 
         self.nextpos = self.currpos.copy()
-        self.nextpos[:3] = self.nextpos[:3] + action[:3]
+        self.nextpos[:3] = self.nextpos[:3] + action[:3] 
 
         # GET ORIENTATION FROM ACTION
         self.nextpos[3:] = (
@@ -224,9 +232,11 @@ class AirbotCartesianEnv(gym.Env):
 
         gripper_action = action[6] * self.action_scale[2]
 
-        self._send_gripper_command(gripper_action)
+        self._send_gripper_command(gripper_action, mode=self.gripper_mode)
         # self._send_pos_command(self.clip_safety_box(self.nextpos))
         self._send_pos_command(self.nextpos)
+        # print(action)
+        # self.robot.servo_cart_twist([action[:3].tolist(), action[3:].tolist()])
 
         self.curr_path_length += 1
         dt = time.time() - start_time
@@ -244,6 +254,7 @@ class AirbotCartesianEnv(gym.Env):
         current_rot = Rotation.from_quat(current_pose[3:]).as_matrix()
         target_rot = Rotation.from_euler("xyz", self._TARGET_POSE[3:]).as_matrix()
         diff_rot = current_rot.T  @ target_rot
+        # cur * M = tar => M = cur-1 * tar =(正交)> M = cur.T * tar
         diff_euler = Rotation.from_matrix(diff_rot).as_euler("xyz")
         delta = np.abs(np.hstack([current_pose[:3] - self._TARGET_POSE[:3], diff_euler]))
         # print(f"Delta: {delta}")
@@ -337,6 +348,7 @@ class AirbotCartesianEnv(gym.Env):
         target_quat = euler_2_quat_scipy(target_pose[3:])
         self.robot.move_to_cart_pose(cart_pose=[target_pos.tolist(), target_quat.tolist()], blocking=True)
         self.robot.switch_mode(RobotMode.SERVO_CART_POSE)
+        # self.robot.switch_mode(RobotMode.SERVO_CART_TWIST)
 
     def reset(self, joint_reset=False, **kwargs):
         self.last_gripper_act = time.time()
@@ -408,22 +420,25 @@ class AirbotCartesianEnv(gym.Env):
         arr = np.array(pos).astype(np.float32).tolist()
         self.robot.servo_cart_pose([arr[:3], arr[3:]])
 
-    def _send_gripper_command(self, pos: float, mode="binary"):
+    def _send_gripper_command(self, pos: float, mode):
         """Internal function to send gripper command to the robot."""
-        # print(pos, self.curr_gripper_pos)
         if mode == "binary":
-            if (pos <= 0.5) and (self.curr_gripper_pos > 0.5) and (time.time() - self.last_gripper_act > self.gripper_sleep):  # close gripper
+            half = (self.gripper_max_length / 2) if not self.normalize_gripper else 0.5
+            if (pos <= -0.5) and (self.curr_gripper_pos > half) and (time.time() - self.last_gripper_act > self.gripper_sleep):  # close gripper
                 self.robot.servo_eef_pos(0.0)
                 self.last_gripper_act = time.time()
-                time.sleep(self.gripper_sleep)
-            elif (pos >= 0.5) and (self.curr_gripper_pos < 0.5) and (time.time() - self.last_gripper_act > self.gripper_sleep):  # open gripper
-                self.robot.servo_eef_pos(1.0)
+                # time.sleep(self.gripper_sleep)
+            elif (pos >= 0.5) and (self.curr_gripper_pos < half) and (time.time() - self.last_gripper_act > self.gripper_sleep):  # open gripper
+                self.robot.servo_eef_pos(self.gripper_max_length)
                 self.last_gripper_act = time.time()
-                time.sleep(self.gripper_sleep)
-            else: 
+                # time.sleep(self.gripper_sleep)
+            else:
                 return
         elif mode == "continuous":
-            self.robot.servo_eef_pos(pos * self.gripper_max_length)
+            if self.normalize_gripper:
+                self.robot.servo_eef_pos(pos * self.gripper_max_length)
+            else:
+                self.robot.servo_eef_pos(pos)
 
     def _update_currpos(self):
         """
@@ -443,7 +458,10 @@ class AirbotCartesianEnv(gym.Env):
         # self.q = np.array(ps["q"])
         # self.dq = np.array(ps["dq"])
 
-        self.curr_gripper_pos = np.array(self.robot.get_eef_pos()) / self.gripper_max_length
+        gripper_reading = np.array(self.robot.get_eef_pos())
+        if self.normalize_gripper:
+            gripper_reading = gripper_reading / self.gripper_max_length
+        self.curr_gripper_pos = gripper_reading
 
     def _get_obs(self) -> dict:
         images = self.get_im()
@@ -479,13 +497,13 @@ class AirbotJointEnv(AirbotCartesianEnv):
             kwargs["config"].JOINT_POS_LIMIT_HIGH,
             dtype=np.float32,
         )
-        
+
         self.observation_space["state"] = gym.spaces.Dict(
             {
                 "joint_pos": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
                 "joint_vel": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
-                "gripper_pose": gym.spaces.Box(-1, 1, shape=(1,)),
                 "joint_torque": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
+                "gripper_pose": gym.spaces.Box(-1, 1, shape=(1,)),
             }
         )
 
@@ -497,7 +515,7 @@ class AirbotJointEnv(AirbotCartesianEnv):
     def step(self, action):
         start_time = time.time()
 
-        self._send_gripper_command(float(action[6]), mode="continuous")
+        self._send_gripper_command(float(action[6]), mode=self.gripper_mode)
         self._send_joint_command(action[:6])
 
         self.curr_path_length += 1
@@ -524,7 +542,9 @@ class AirbotJointEnv(AirbotCartesianEnv):
         pose = self.robot.get_end_pose()
         self.currpos = np.array(pose[0] + pose[1])
 
-        self.curr_gripper_pos = np.array(self.robot.get_eef_pos()) / self.gripper_max_length
+        self.curr_gripper_pos = np.array(self.robot.get_eef_pos())
+        if self.normalize_gripper:
+            self.curr_gripper_pos = self.curr_gripper_pos / self.gripper_max_length
 
     def _get_obs(self) -> dict:
         images = self.get_im()

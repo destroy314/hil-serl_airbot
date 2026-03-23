@@ -133,106 +133,55 @@ def get_action_displayer():
 
 
 class AirbotCartesianExpert:
-    """WIP, use SpaceMouseExpert instead."""
+    """WIP, SpaceMouseExpert performs better."""
     def __init__(self, port):
         self.robot = AIRBOTArm(port=port)
         self.robot.connect()
 
-        # Manager to handle shared state between processes
-        self.manager = multiprocessing.Manager()
-        self.latest_data = self.manager.dict()
-        self.latest_data["action"] = [0.0] * 6  # Using lists for compatibility
-        self.latest_data["s_pressed"] = False
-        self.latest_data["gripper_control"] = [False] * 2 # Close, Open
+        self.intervened = False
+        self.prev_pos = None
+        self.prev_euler = None
 
         def on_press(key):
-            try:
-                if key.char == "s":
-                    self.latest_data["s_pressed"] = True
-            except AttributeError:
-                pass
+            if hasattr(key, "char") and key.char == "s":
+                self.intervened = not self.intervened
+                print("Intervened:", self.intervened)
+                if self.intervened:
+                    pose = self.robot.get_end_pose()
+                    if pose is not None:
+                        self.prev_pos = np.array(pose[0])
+                        self.prev_euler = quat_2_euler(pose[1])
+                else:
+                    self.prev_pos = None
+                    self.prev_euler = None
 
-        def on_release(key):
-            try:
-                if key.char == "s":
-                    self.latest_data["s_pressed"] = False
-            except AttributeError:
-                pass
-        
-        self.listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        self.listener = keyboard.Listener(on_press=on_press)
         self.listener.start()
 
-        gripper_pos = self.robot.get_eef_pos()
-        assert gripper_pos is not None
-        self.gripper_closed = gripper_pos[0] < 0.05
+    def get_action(self):
+        action = np.zeros(6)
+        gripper = 0.0
 
-        # Start a process to continuously read arm state
-        self.process = multiprocessing.Process(target=self._read_airbot)
-        self.process.daemon = True
-        self.process.start()
-
-    def _read_airbot(self):
-        s_pressed_prev = False
-        start_pos = None
-        start_euler = None
-
-        while True:
-            pose = self.robot.get_end_pose() #[[x,y,z], [qx, qy, qz, w]]
-            if pose is None:
-                time.sleep(0.001)
-                continue
-            current_pos = np.array(pose[0])
-            current_quat = pose[1]
-            current_euler = quat_2_euler(current_quat)
-            
-            s_pressed = self.latest_data["s_pressed"] 
-            
-            action = np.zeros(6)
-
-            if s_pressed:
-                if not s_pressed_prev:
-                    # Just pressed, record starting pose
-                    start_pos = current_pos
-                    start_euler = current_euler
-                
-                if start_pos is not None and start_euler is not None:
-                    delta_pos = current_pos - start_pos
-                    delta_euler = current_euler - start_euler
-                    action[:3] = delta_pos
-                    action[3:] = delta_euler
-            
-            s_pressed_prev = s_pressed
-
-            # Update the shared state
-            self.latest_data["action"] = action.tolist()
+        if self.intervened:
+            pose = self.robot.get_end_pose()  # [[x,y,z], [qx, qy, qz, w]]
+            if pose is not None:
+                current_pos = np.array(pose[0])
+                current_euler = quat_2_euler(pose[1])
+                if self.prev_pos is not None and self.prev_euler is not None:
+                    action[:3] = current_pos - self.prev_pos
+                    action[3:] = (current_euler - self.prev_euler + np.pi) % (2 * np.pi) - np.pi
+                self.prev_pos = current_pos
+                self.prev_euler = current_euler
 
             gripper_pos = self.robot.get_eef_pos()
-            if gripper_pos is None:
-                time.sleep(0.001)
-                continue
-            if gripper_pos[0] < 0.05:
-                if self.gripper_closed:
-                    self.latest_data["gripper_control"] = [False, False]
-                else:
-                    self.latest_data["gripper_control"] = [True, False]
-            else:
-                if self.gripper_closed:
-                    self.latest_data["gripper_control"] = [False, True]
-                else:
-                    self.latest_data["gripper_control"] = [False, False]
-            self.gripper_closed = gripper_pos[0] < 0.05
-            
-            time.sleep(0.001)
+            if gripper_pos is not None:
+                gripper = gripper_pos[0]
 
-    def get_action(self):
-        action = self.latest_data["action"]
-        intervened = self.latest_data["s_pressed"]
-        gripper = self.latest_data["gripper_control"]
-        return np.array(action), intervened, gripper
-    
+        return np.array(action), gripper, self.intervened
+
     def close(self):
         self.listener.stop()
-        self.process.terminate()
+        self.robot.disconnect()
 
 class AirbotJointExpert():
     def __init__(self, leader_port, follower_port, display_action=False):
@@ -252,8 +201,7 @@ class AirbotJointExpert():
                 if self.intervened:
                     self.leader_start_pos = np.array(self.leader.get_joint_pos())
                     self.follower_start_pos = np.array(self.follower.get_joint_pos())
-                    # print(leader_port,"Leader Start Pos:", self.leader_start_pos)
-                    # print(follower_port,"Follower Start Pos:", self.follower_start_pos)
+                    # print(leader_port, "Leader Start Pos:", self.leader_start_pos, "Follower Start Pos:", self.follower_start_pos)
 
         self.key_listener = keyboard.Listener(on_press=on_press)
         self.key_listener.start()
@@ -262,11 +210,15 @@ class AirbotJointExpert():
         if self.intervened:
             leader_pos = np.array(self.leader.get_joint_pos())
             action = leader_pos - self.leader_start_pos + self.follower_start_pos
-            # print(self.leader_port, "Leader Pos:", leader_pos)
-            # print(self.leader_port, "Action:", action)
+            # print(self.leader_port, "Leader Pos:", leader_pos, "Action:", action, gripper)
             gripper = self.leader.get_eef_pos()[0]
         else:
             # will be ignored
             action = np.zeros(6)
             gripper = 0.0
         return np.array(action), gripper, self.intervened
+
+    def close(self):
+        self.key_listener.stop()
+        self.leader.disconnect()
+        self.follower.disconnect()

@@ -2,26 +2,46 @@ import numpy as np
 import gymnasium as gym
 from airbot_env.envs.airbot_env import AirbotJointEnv
 
-class TimingBeltEnv(AirbotJointEnv):
+class DualAirbotEnvSingle(AirbotJointEnv):
     pass
 
 
 class GripperPenaltyWrapper(gym.Wrapper):
-    # TODO 也许改成根据变化量惩罚？
+    """Penalises gripper state transitions (open↔close).
+
+    action_value thresholds (apply to the gripper action dimension):
+      action <= action_close_threshold  → close command
+      action >= action_open_threshold   → open command
+      in between                        → neutral, no penalty
+
+    obs_pos thresholds (apply to normalised gripper_pose in [0, 1] from observation):
+      obs >= obs_open_threshold   → gripper considered open
+      obs <= obs_close_threshold  → gripper considered closed
+
+    Default values are set for binary mode where actions ∈ {-1, 0, +1}:
+      action_close_threshold = -0.5  (catches -1, excludes 0)
+      action_open_threshold  =  0.5  (catches +1, excludes 0)
+      obs_open_threshold     =  0.06 (gripper ≥ ~4 mm open)
+      obs_close_threshold    =  0.01 (gripper ≤ ~0.7 mm open)
+    """
+
     def __init__(
         self,
         env,
         penalty=-0.05,
-        open_threshold=0.8,
-        close_threshold=0.2,
+        action_close_threshold=-0.5,
+        action_open_threshold=0.5,
+        obs_open_threshold=0.06,
+        obs_close_threshold=0.01,
         left_gripper_index=18,
         right_gripper_index=37,
     ):
         super().__init__(env)
-        assert env.action_space.shape == (14,)
         self.penalty = penalty
-        self.open_threshold = open_threshold
-        self.close_threshold = close_threshold
+        self.action_close_threshold = action_close_threshold
+        self.action_open_threshold = action_open_threshold
+        self.obs_open_threshold = obs_open_threshold
+        self.obs_close_threshold = obs_close_threshold
         self.left_gripper_index = left_gripper_index
         self.right_gripper_index = right_gripper_index
         self.last_left_gripper_pos = None
@@ -44,9 +64,10 @@ class GripperPenaltyWrapper(gym.Wrapper):
         return obs, info
 
     def _compute_penalty(self, action_value, last_pos):
-        if action_value <= self.close_threshold and last_pos >= self.open_threshold:
+        """Penalise when action requests closing while gripper was open, or vice versa."""
+        if action_value <= self.action_close_threshold and last_pos >= self.obs_open_threshold:
             return self.penalty
-        if action_value >= self.open_threshold and last_pos <= self.close_threshold:
+        if action_value >= self.action_open_threshold and last_pos <= self.obs_close_threshold:
             return self.penalty
         return 0.0
 

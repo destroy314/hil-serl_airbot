@@ -249,14 +249,23 @@ class SACAgent(flax.struct.PyTreeNode):
         )
         return temperature_loss, {"temperature_loss": temperature_loss}
     
-    def loss_fns(self, batch):
+    def bc_actor_loss_fn(self, batch, params: Params, rng: PRNGKey):
+        rng, policy_rng = jax.random.split(rng)
+        action_distributions = self.forward_policy(
+            batch["observations"], rng=policy_rng, grad_params=params
+        )
+        predicted_actions = action_distributions.mode()
+        bc_loss = jnp.mean((predicted_actions - batch["actions"]) ** 2)
+        return bc_loss, {"bc_actor_loss": bc_loss}
+
+    def loss_fns(self, batch, use_bc_actor: bool = False):
         return {
             "critic": partial(self.critic_loss_fn, batch),
-            "actor": partial(self.policy_loss_fn, batch),
+            "actor": partial(self.bc_actor_loss_fn, batch) if use_bc_actor else partial(self.policy_loss_fn, batch),
             "temperature": partial(self.temperature_loss_fn, batch),
         }
 
-    @partial(jax.jit, static_argnames=("pmap_axis", "networks_to_update"))
+    @partial(jax.jit, static_argnames=("pmap_axis", "networks_to_update", "use_bc_actor"))
     def update(
         self,
         batch: Batch,
@@ -265,6 +274,7 @@ class SACAgent(flax.struct.PyTreeNode):
         networks_to_update: FrozenSet[str] = frozenset(
             {"actor", "critic", "temperature"}
         ),
+        use_bc_actor: bool = False,
         **kwargs
     ) -> Tuple["SACAgent", dict]:
         """
@@ -294,7 +304,7 @@ class SACAgent(flax.struct.PyTreeNode):
         )
 
         # Compute gradients and update params
-        loss_fns = self.loss_fns(batch, **kwargs)
+        loss_fns = self.loss_fns(batch, use_bc_actor=use_bc_actor)
 
         # Only compute gradients for specified steps
         assert networks_to_update.issubset(
@@ -323,6 +333,43 @@ class SACAgent(flax.struct.PyTreeNode):
                 info[f"{name}_lr"] = opt_state.hyperparams["learning_rate"]
 
         return self.replace(state=new_state), info
+
+    def compute_gradient_norms(self, batch: Batch) -> dict:
+        """Compute gradient norms for actor and critic. NOT jitted -- call sparingly."""
+        # Preprocess batch same as in update()
+        if self.config["image_keys"][0] not in batch["next_observations"]:
+            batch = _unpack(batch)
+
+        rng = self.state.rng
+
+        # Actor gradient norm
+        actor_grad_fn = jax.grad(
+            lambda params, rng: self.policy_loss_fn(batch, params, rng)[0],
+            has_aux=False,
+        )
+        actor_grads = actor_grad_fn(self.state.params, rng)
+        actor_leaves = jax.tree_util.tree_leaves(
+            actor_grads.get("modules_actor", actor_grads)
+            if isinstance(actor_grads, dict) else actor_grads
+        )
+        actor_grad_norm = jnp.sqrt(sum(jnp.sum(g ** 2) for g in actor_leaves))
+
+        # Critic gradient norm
+        critic_grad_fn = jax.grad(
+            lambda params, rng: self.critic_loss_fn(batch, params, rng)[0],
+            has_aux=False,
+        )
+        critic_grads = critic_grad_fn(self.state.params, rng)
+        critic_leaves = jax.tree_util.tree_leaves(
+            critic_grads.get("modules_critic", critic_grads)
+            if isinstance(critic_grads, dict) else critic_grads
+        )
+        critic_grad_norm = jnp.sqrt(sum(jnp.sum(g ** 2) for g in critic_leaves))
+
+        return {
+            "actor_grad_norm": float(jax.device_get(actor_grad_norm)),
+            "critic_grad_norm": float(jax.device_get(critic_grad_norm)),
+        }
 
     @partial(jax.jit, static_argnames=("argmax",))
     def sample_actions(
