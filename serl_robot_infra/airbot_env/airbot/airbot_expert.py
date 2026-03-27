@@ -4,6 +4,7 @@ import time
 
 import cv2
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 from airbot_py.arm import AIRBOTArm
 try:
     from pynput import keyboard
@@ -169,7 +170,12 @@ class AirbotCartesianExpert:
                 current_euler = quat_2_euler(pose[1])
                 if self.prev_pos is not None and self.prev_euler is not None:
                     action[:3] = current_pos - self.prev_pos
-                    action[3:] = (current_euler - self.prev_euler + np.pi) % (2 * np.pi) - np.pi
+                    # action[3:] = (current_euler - self.prev_euler + np.pi) % (2 * np.pi) - np.pi
+                    # 在 SO(3) 旋转群上做正确的旋转差值再转回欧拉角
+                    prev_rotmax = R.from_euler("xyz", self.prev_euler, degrees=False)
+                    curr_rotmax = R.from_euler("xyz", current_euler, degrees=False)
+                    delta_rot = curr_rotmax * prev_rotmax.inv()
+                    action[3:] = delta_rot.as_euler("xyz", degrees=False)
                 self.prev_pos = current_pos
                 self.prev_euler = current_euler
 

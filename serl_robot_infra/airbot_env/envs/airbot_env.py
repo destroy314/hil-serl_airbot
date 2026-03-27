@@ -81,6 +81,7 @@ class DefaultEnvConfig:
     # "binary": gripper action is in {-1, 0, 1}; ≤-0.5 closes, ≥0.5 opens, 0 is neutral (no command).
     # for binary mode, don't move gripper faster than GRIPPER_SLEEP because env will ignore the command.
     GRIPPER_MODE: str = "continuous"
+    SPEED_FAST: bool = False
 
 
 ##############################################################################
@@ -181,7 +182,10 @@ class AirbotCartesianEnv(gym.Env):
         self.robot.switch_mode(RobotMode.SERVO_CART_POSE)
         # self.robot.switch_mode(RobotMode.SERVO_CART_TWIST)
         # self.robot.set_speed_profile(SpeedProfile.SLOW)
-        self.robot.set_speed_profile(SpeedProfile.DEFAULT)
+        if not config.SPEED_FAST:
+            self.robot.set_speed_profile(SpeedProfile.DEFAULT)
+        else:
+            self.robot.set_speed_profile(SpeedProfile.FAST)
 
         self._update_currpos()
 
@@ -195,17 +199,20 @@ class AirbotCartesianEnv(gym.Env):
         euler = Rotation.from_quat(pose[3:]).as_euler("xyz")
 
         # Clip first euler angle separately due to discontinuity from pi to -pi
-        sign = np.sign(euler[0])
-        euler[0] = sign * (
-            np.clip(
-                np.abs(euler[0]),
-                self.rpy_bounding_box.low[0],
-                self.rpy_bounding_box.high[0],
-            )
-        )
+        # sign = np.sign(euler[0])
+        # euler[0] = sign * (
+        #     np.clip(
+        #         np.abs(euler[0]),
+        #         self.rpy_bounding_box.low[0],
+        #         self.rpy_bounding_box.high[0],
+        #     )
+        # )
 
-        euler[1:] = np.clip(
-            euler[1:], self.rpy_bounding_box.low[1:], self.rpy_bounding_box.high[1:]
+        # euler[1:] = np.clip(
+        #     euler[1:], self.rpy_bounding_box.low[1:], self.rpy_bounding_box.high[1:]
+        # )
+        euler = np.clip(
+            euler, self.rpy_bounding_box.low, self.rpy_bounding_box.high
         )
         pose[3:] = Rotation.from_euler("xyz", euler).as_quat()
 
@@ -233,8 +240,8 @@ class AirbotCartesianEnv(gym.Env):
         gripper_action = action[6] * self.action_scale[2]
 
         self._send_gripper_command(gripper_action, mode=self.gripper_mode)
-        # self._send_pos_command(self.clip_safety_box(self.nextpos))
-        self._send_pos_command(self.nextpos)
+        self._send_pos_command(self.clip_safety_box(self.nextpos))
+        # self._send_pos_command(self.nextpos)
         # print(action)
         # self.robot.servo_cart_twist([action[:3].tolist(), action[3:].tolist()])
 
@@ -356,6 +363,7 @@ class AirbotCartesianEnv(gym.Env):
             self.save_video_recording()
 
         self.go_to_reset(joint_reset=joint_reset)
+        self._send_gripper_command(0.0, mode="continuous")
         self.curr_path_length = 0
 
         self._update_currpos()

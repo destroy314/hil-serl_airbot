@@ -25,22 +25,26 @@ class EnvConfigLeft(DefaultEnvConfig):
         "env":   {"index": 0, "dim": (640, 480), "fps": 30},
     }
     IMAGE_CROP = {
-        "wrist": lambda img: img[240 - _l:240 + _l, 320 - _l:320 + _l],
-        "env":   lambda img: img[240 - _l:240 + _l, 320 - _l:320 + _l],
+        "wrist": lambda img: img[:, 80:560],
+        "env":   lambda img: img[:, 80:560],
     }
     # Cartesian reset/target poses: [x, y, z, roll, pitch, yaw]  (meters / radians)
     # !! Calibrate these values for your physical setup !!
     RESET_POSE  = np.array([0.21, 0.0, 0.17, 0.1, 0.89, -0.18])
     TARGET_POSE = np.array([10] * 6) # far from obs space so the reward keeps 0
     REWARD_THRESHOLD = np.array([0.01, 0.01, 0.01, 0.1, 0.1, 0.1])
-    ABS_POSE_LIMIT_LOW  = RESET_POSE - np.array([0.15, 0.15, 0.15, 0.5, 0.5, 0.5])
-    ABS_POSE_LIMIT_HIGH = RESET_POSE + np.array([0.15, 0.15, 0.15, 0.5, 0.5, 0.5])
+    # fill this by compute_pose_limit.py
+    ABS_POSE_LIMIT_LOW  = np.array([0.1877, -0.0260, 0.1490, 0.0021, 0.8386, -0.2711])
+    ABS_POSE_LIMIT_HIGH = np.array([0.2301, 0.0201, 0.1902, 0.1512, 0.9464, -0.1291])
     # action_scale: (position_m, rotation_rad, gripper)
     # With scale=(1,1,1) the raw delta from the leader arm is applied directly.
-    ACTION_SCALE = (10.0, 10.0, 1.0)
+    # ACTION_SCALE = (1.6, 1.6, 1.0) # for human
+    # ACTION_SCALE = (0.02, 0.02, 1.0) # for not argmax
+    ACTION_SCALE = (1.0, 1.0, 1.0) # for slower argmax
     DISPLAY_IMAGE = False
     MAX_EPISODE_LENGTH = int(1e9)
     GRIPPER_MODE = "binary"
+    SPEED_FAST = True
 
 
 class EnvConfigRight(EnvConfigLeft):
@@ -52,8 +56,8 @@ class EnvConfigRight(EnvConfigLeft):
     # !! Calibrate for your right arm !!
     RESET_POSE  = np.array([0.21, 0.0, 0.17, -0.1, 0.89, 0.08])
     TARGET_POSE = np.array([10] * 6)
-    ABS_POSE_LIMIT_LOW  = RESET_POSE - np.array([0.15, 0.15, 0.15, 0.5, 0.5, 0.5])
-    ABS_POSE_LIMIT_HIGH = RESET_POSE + np.array([0.15, 0.15, 0.15, 0.5, 0.5, 0.5])
+    ABS_POSE_LIMIT_LOW  = np.array([0.1901, -0.0251, 0.0037, -0.2112, 0.8201, 0.0079])
+    ABS_POSE_LIMIT_HIGH = np.array([0.3624, 0.3500, 0.2129, 0.6772, 1.4853, 1.4016])
 
 
 class TrainConfig(DefaultTrainingConfig):
@@ -70,13 +74,13 @@ class TrainConfig(DefaultTrainingConfig):
     buffer_period     = 1000
     checkpoint_period = 5000
     steps_per_update  = 50
-    training_starts   = 250
+    training_starts   = 25 * 10
     encoder_type      = "resnet-pretrained"
 
     # SACAgentHybridDualArm: 12D continuous + 2×3-way discrete gripper (indices 6, 13)
     setup_mode = "dual-arm-learned-gripper"
 
-    pretrain_steps = 0
+    pretrain_steps = 1000
     pretrain_loss  = "bc"
 
     # Enable action normalisation after recording demos and computing stats:
@@ -86,8 +90,8 @@ class TrainConfig(DefaultTrainingConfig):
     # Then set:
     #   action_norm_scale = 0.9
     #   action_stats_path = "demo_data/airbot_cart_stats.json"
-    action_norm_scale      = 0.0   # disabled until demo stats are computed
-    action_stats_path      = None
+    action_norm_scale      = 1.0   # disabled until demo stats are computed
+    action_stats_path      = "demo_data/1.json"
     action_derivative_scale = 0.0  # Cartesian deltas don't require derivative constraints
 
     # actor_kwargs = {
@@ -98,6 +102,7 @@ class TrainConfig(DefaultTrainingConfig):
     # Leader arm ports (must differ from follower ports)
     left_leader_port  = 50050
     right_leader_port = 50052
+    rel_ctrl = True
 
     def get_environment(self, fake_env=False, save_video=False, classifier=False):
         left_env = AirbotCartEnvSingle(
